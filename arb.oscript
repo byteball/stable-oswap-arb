@@ -1,0 +1,442 @@
+{
+	doc_url: "https://ostable.org/stable-oswap-oswap-arb.json",
+	init: `{
+		$min_reserve_delta = params.min_reserve_delta OTHERWISE 1e5;
+
+		$stable_aa = params.stable_aa;
+		$stable_params = definition[$stable_aa][1].params;
+
+		$curve_aa = $stable_params.curve_aa;
+		$curve_params = definition[$curve_aa][1].params;
+
+		$m = $curve_params.m;
+		$n = $curve_params.n;
+		$decimals1 = $curve_params.decimals1;
+		$decimals2 = $curve_params.decimals2;
+		$reserve_asset_decimals = $curve_params.reserve_asset_decimals;
+
+		// tokens
+		$interest_asset = var[$curve_aa]['asset2'];
+		$stable_asset = var[$stable_aa]['asset'];
+		$reserve_asset = $curve_params.reserve_asset OTHERWISE 'base';
+
+		$reserve_oswap_aa = params.reserve_oswap_aa;
+		$stable_oswap_aa = params.stable_oswap_aa;
+
+		$stable_oswap_params = definition[$stable_oswap_aa][1].params;
+		$reserve_oswap_params = definition[$reserve_oswap_aa][1].params;
+		
+		$stable_oswap_fee = $stable_oswap_params.swap_fee / 1e11;
+		$reserve_oswap_fee = $reserve_oswap_params.swap_fee / 1e11;
+		$oswap_net = (1-$stable_oswap_fee)*(1-$reserve_oswap_fee);
+
+		$stable_imported_asset = $stable_oswap_params.asset0 == $stable_asset ? $stable_oswap_params.asset1 : $stable_oswap_params.asset0;
+		$stable_imported_asset2 = $reserve_oswap_params.asset0 == $reserve_asset ? $reserve_oswap_params.asset1 : $reserve_oswap_params.asset0;
+		if ($stable_imported_asset2 != $stable_imported_asset)
+			bounce("stable imported asset mismatch " || $stable_imported_asset || ' != ' || $stable_imported_asset2);
+
+
+		$get_oracles = () => {
+			$oracles = var[$curve_aa]['oracles'];
+			if ($oracles)
+				return $oracles;
+			$initial_oracles = [];
+			if ($curve_params.oracle1 AND $curve_params.feed_name1)
+				$initial_oracles[] = {oracle: $curve_params.oracle1, feed_name: $curve_params.feed_name1, op: $curve_params.op1 OTHERWISE '*'};
+			if ($curve_params.oracle2 AND $curve_params.feed_name2)
+				$initial_oracles[] = {oracle: $curve_params.oracle2, feed_name: $curve_params.feed_name2, op: $curve_params.op2 OTHERWISE '*'};
+			if ($curve_params.oracle3 AND $curve_params.feed_name3)
+				$initial_oracles[] = {oracle: $curve_params.oracle3, feed_name: $curve_params.feed_name3, op: $curve_params.op3 OTHERWISE '*'};
+			$initial_oracles
+		};
+
+		$get_oracle_price = () => {
+			$oracles = $get_oracles();
+			$oracle_price = reduce($oracles, 3, ($price, $oracle_info) => {
+				if (!exists($price))
+					return false;
+				$df = data_feed[[oracles=$oracle_info.oracle, feed_name=$oracle_info.feed_name, ifnone=false]];
+				if (!exists($df))
+					return false;
+				($oracle_info.op == '*') ? $price * $df : $price / $df
+			}, 1);
+			$oracle_price
+		};
+
+		$get_leverage = () => $curve_params.leverage OTHERWISE 0;
+
+		$get_growth_factor = () => {
+			$interest_rate = var[$curve_aa]['interest_rate'];
+			$term = (timestamp - var[$curve_aa]['rate_update_ts']) / (360 * 24 * 3600); // in years
+			$growth_factor = var[$curve_aa]['growth_factor'] * (1 + $interest_rate)^$term;
+			$growth_factor
+		};
+		$g = $get_growth_factor();
+
+		$get_target_p2 = () => {
+			$oracle_price = $get_oracle_price();
+			if (!exists($oracle_price))
+				return false;
+			$target_p2 = $oracle_price^($get_leverage() - 1) * $g;
+			$target_p2
+		};
+
+		$get_reserve = ($s1, $s2) => {
+			$r = $s1^$m * $s2^$n;
+			$r
+		};
+
+		$get_p2 = ($s1, $s2) => {
+			$p2 = $s1^$m * $n * $s2^($n-1); // derivative
+			$p2
+		};
+
+
+		$get_slow_capacity_share = () => {
+			$slow_capacity_share_var = var[$curve_aa]['slow_capacity_share'];
+			if (exists($slow_capacity_share_var))
+				$slow_capacity_share = $slow_capacity_share_var;
+			else if (exists($curve_params.slow_capacity_share))
+				$slow_capacity_share = $curve_params.slow_capacity_share;
+			else
+				$slow_capacity_share = 0.5;
+			$slow_capacity_share
+		};
+
+		$get_distance = ($p2, $target_p2) => (exists($p2) AND exists($target_p2)) ? abs($p2 - $target_p2) / min($p2, $target_p2) : 0;
+
+		$fee_multiplier = var[$curve_aa]['fee_multiplier'] OTHERWISE $curve_params.fee_multiplier OTHERWISE 5;
+
+		$get_fee = ($avg_reserve, $old_distance, $new_distance) => {
+			$fee = ceil($fee_multiplier * $avg_reserve * ($new_distance - $old_distance) * ($new_distance + $old_distance));
+			$fee
+		};
+
+		$get_reserve_needed = ($tokens1, $tokens2) => {
+			$slow_capacity_share = $get_slow_capacity_share();
+			$fast_capacity_share = 1 - $slow_capacity_share;
+
+			$initial_p2 = var[$curve_aa]['p2'];
+			$target_p2 = $get_target_p2();
+			$distance = $get_distance($initial_p2, $target_p2);
+
+			$reserve = var[$curve_aa]['reserve'];
+			if (!$reserve AND ($tokens1 <= 0 OR $tokens2 <= 0))
+				bounce("initial mint must be with both tokens");
+			$new_supply1 = var[$curve_aa]['supply1'] + $tokens1;
+			$new_supply2 = var[$curve_aa]['supply2'] + $tokens2;
+			$s1 = $new_supply1 / 10^$decimals1;
+			$s2 = $new_supply2 / 10^$decimals2;
+			$r = $get_reserve($s1, $s2);
+			$p2 = $get_p2($s1, $s2);
+			$new_reserve = ceil($r * 10^$reserve_asset_decimals);
+			$reserve_delta = $new_reserve - $reserve; // can be negative
+			if ($tokens1 >= 0 AND $tokens2 >= 0 AND $reserve_delta < 0)
+				bounce("issuing tokens while the reserve decreases?");
+			if ($tokens1 <= 0 AND $tokens2 <= 0 AND $reserve_delta > 0)
+				bounce("burning tokens while the reserve increases?");
+
+			$new_distance = $get_distance($p2, $target_p2);
+			$avg_reserve = ($reserve + $new_reserve) / 2;
+			$fast_capacity = var[$curve_aa]['fast_capacity'];
+			if ($distance == 0 AND $new_distance == 0){
+				$fee = 0;
+				$reward = 0;
+				$reserve_needed = $reserve_delta;
+			}
+			else if ($new_distance >= $distance){ // going away from the target price - pay a fee
+				$reward = 0;
+				$regular_fee = $get_fee($avg_reserve, $distance, $new_distance);
+				$new_fast_capacity = $fast_capacity + $regular_fee * $fast_capacity_share;
+				$distance_share = 1 - $distance/$new_distance;
+				// reward that would be paid for returning the price back to $initial_p2
+				$reverse_reward = $distance_share * $new_fast_capacity;
+				if ($regular_fee >= $reverse_reward)
+					$fee = $regular_fee;
+				else
+					$fee = ceil($distance_share / (1 - $distance_share * $fast_capacity_share) * $fast_capacity);
+				$reserve_needed = $reserve_delta + $fee; // negative for payouts
+			}
+			else { // going towards the target price - get a reward
+				$fee = 0;
+				$regular_reward = floor((1 - $new_distance/$distance) * $fast_capacity);
+				if ($curve_params.capped_reward){
+					// if the reward would be greater than the fee for the reverse transaction, cap the reward by the fee
+					$reverse_fee = $get_fee($avg_reserve, $new_distance, $distance);
+					$reward = min($regular_reward, $reverse_fee);
+				}
+				else
+					$reward = $regular_reward;
+				$reserve_needed = $reserve_delta - $reward; // negative for payouts
+			}
+
+			$reserve_needed
+		};
+
+		$aa2aa_bytes = 2000;
+		$network_fee = ($reserve_asset == 'base') ? 4000 : 0; // for fees and pinging the DE
+		$full_network_fee = $network_fee + ($reserve_asset == 'base' ?  $aa2aa_bytes : 0);
+
+		$get_amount_for_buying = ($tokens2) => {
+			if ($tokens2 == 0)
+				bounce("0 T2");
+			$reserve_needed = $get_reserve_needed(0, $tokens2);
+			if ($reserve_needed < $min_reserve_delta)
+				bounce("reserve amount too small " || $reserve_needed);
+			$amount = $reserve_needed + $full_network_fee;
+			$amount
+		};
+
+		$get_fee_share = ($p2, $target_p2) => 2 * $fee_multiplier * ($n-1)/$n * abs($target_p2-$p2)/$p2 * $target_p2/$p2;
+
+	}`,
+	messages: {
+		cases: [
+
+			// start arb curve -> stable -> oswap -> oswap
+			{
+				if: `{ trigger.data.arb }`,
+				init: `{
+					$s2 = var[$curve_aa]['supply2'] / 10^$decimals2;
+					$p2 = var[$curve_aa]['p2'];
+					$fc = var[$curve_aa]['fast_capacity'] / 10^$reserve_asset_decimals;
+					$target_p2 = $get_target_p2();
+					$reward_share = ($n-1)*$fc/abs($target_p2-$p2)/$s2;
+					$fee_share = $get_fee_share($p2, $target_p2);
+
+					$s = balance[$stable_oswap_aa][$stable_asset] / 10^$decimals2;
+					$i1 = balance[$stable_oswap_aa][$stable_imported_asset];
+					$i2 = balance[$reserve_oswap_aa][$stable_imported_asset];
+					$ro = balance[$reserve_oswap_aa][$reserve_asset] / 10^$reserve_asset_decimals;
+
+					$p_stable = $p2/$g;
+					$p_oswap = ($i1/$s) / ($i2/$ro);
+					$p2_oswap = $g * $p_oswap;
+
+					if (trigger.data.amount) { // overriden in the request, don't calc
+						$sent_amount = trigger.data.amount;
+						$sent_tokens2 = trigger.data.tokens2;
+						$from = $sent_tokens2 ? 'curve' : 'oswap';
+						return;
+					}
+
+					// profitable to buy on ostable and sell on oswap
+					if ($p2 < $target_p2 AND $reward_share < 1 AND $get_distance($p2, $target_p2) > 0.0001 AND $p_stable * (1-$reward_share) < $p_oswap * $oswap_net) {
+						$delta_s = (sqrt($g*$ro*$i2/$i1*$s*$oswap_net / $p2 / (1 - ($n-1)*$fc/$s2/($target_p2-$p2))) - $i2/$i1*$s) / (1 + $i2/$i1);
+						$delta_s2 = $delta_s/$g;
+						if ($delta_s2 < 0)
+							bounce("expected to buy T2, calc says should sell " || $delta_s2);
+						$tokens2 = round($delta_s2 * 10^$decimals2);
+						$amount = $get_amount_for_buying($tokens2);
+						$from = 'curve';
+					}
+					// profitable to buy on oswap and sell on ostable
+					else if ($p_stable * (1-$fee_share) > $p_oswap / $oswap_net) {
+
+						$get_delta_s = ($p2_avg) => (sqrt($g*$ro*$i2/$i1*$s/$oswap_net / $p2 / (1 - 2*$fee_multiplier*($n-1)/$n * abs($target_p2-$p2_avg)/$p2_avg * $target_p2/$p2_avg)) - $i2/$i1*$s) / (1 + $i2/$i1);
+
+						$get_delta_s_iterated = () => {
+							$delta_s_approx = $get_delta_s($p2);
+						//	return $delta_s_approx;
+							$delta_s2_approx = $delta_s_approx/$g;
+							$delta_p2 = ($n-1) * $p2/$s2 * $delta_s2_approx; // negative
+							$p2_avg = $p2 + $delta_p2/2; // the fee is the most non-linear, recalc it with the avg price
+							if ($get_fee_share($p2_avg, $target_p2) >= 1){
+								response['half'] = $delta_s_approx/2;
+								return $delta_s_approx/2;
+							}
+							$get_delta_s($p2_avg)
+						};
+
+						$delta_s = $get_delta_s_iterated();
+						$delta_s2 = $delta_s/$g;
+						if ($delta_s2 > 0)
+							bounce("expected to sell T2, calc says should buy " || $delta_s2);
+						$delta_ro = $ro/(1+$i2/$i1+$i2/$i1*$s/$delta_s) / $oswap_net;
+						if ($delta_ro > 0)
+							bounce("delta_ro > 0: " || $delta_ro);
+						$amount = round(-$delta_ro * 10^$reserve_asset_decimals);
+						if ($amount < $min_reserve_delta)
+							bounce("amount too small " || $amount);
+						$from = 'oswap';
+					}
+					else
+						bounce("no arb opportunity exists");
+					
+					// check if we have enough balance and scale down if necessary
+					$max_amount = balance[$reserve_asset] - ($reserve_asset == 'base' ? 10000 : 0);
+					if ($amount > $max_amount) { // not enough balance
+						response['suboptimal'] = "optimal arb amount " || $amount || " but have only " || $max_amount;
+						if ($tokens2){
+							$sent_tokens2 = round(0.7 * $tokens2 * $max_amount/$amount); // scale down
+							$sent_amount = $get_amount_for_buying($sent_tokens2);
+							if ($sent_amount > $max_amount)
+								bounce("balance is too small for optimal arb and scaling down didn't help");
+						}
+						else
+							$sent_amount = $max_amount;
+					}
+					else {
+						$sent_tokens2 = $tokens2;
+						$sent_amount = $amount;
+					}
+
+					// expected profit
+					if ($sent_tokens2) { // buying
+						$sent_delta_s = $g * $sent_tokens2 / 10^$decimals2;
+						$expected_profit = round(($ro*$oswap_net / (1 + $i2/$i1 + $i2/$i1 * $s/$sent_delta_s) - $p2/$g * (1 - $reward_share) * $sent_delta_s) * 10^$reserve_asset_decimals);
+					}
+					else { // selling
+						$sent_delta_s = $sent_amount/$amount * $delta_s;
+						$expected_profit = round(($ro/$oswap_net / (1 + $i2/$i1 + $i2/$i1 * $s/$sent_delta_s) - $p2/$g * (1 - $fee_share) * $sent_delta_s) * 10^$reserve_asset_decimals);
+					}
+					if ($expected_profit <= 0)
+						bounce("expected profit " || $expected_profit);
+				}`,
+				messages: [
+					{
+						app: 'payment',
+						payload: {
+							asset: `{$reserve_asset}`,
+							outputs: [
+								{address: "{$from == 'curve' ? $curve_aa : $reserve_oswap_aa}", amount: "{ $sent_amount }"}
+							]
+						}
+					},
+					{
+						if: `{$from == 'curve'}`,
+						app: 'data',
+						payload: {
+							tokens2: `{$sent_tokens2}`,
+							tokens2_to: `{$stable_aa}`
+						}
+					},
+					{
+						if: `{$from == 'oswap'}`,
+						app: 'data',
+						payload: {
+							to_aa: `{$stable_oswap_aa}`,
+							to: `{this_address}`
+						}
+					},
+					{
+						app: 'state',
+						state: `{
+							var['sent_amount'] = $sent_amount;
+							response['sent_amount'] = $sent_amount;
+							response['expected_profit'] = $expected_profit;
+							response['reward_share'] = $reward_share;
+							response['fee_share'] = $fee_share;
+							response['message'] = $from == 'curve' ? 'will arb by buying from the curve' : 'will arb by selling to the curve';
+						}`
+					}
+				]
+			},
+
+			// curve -> stable -> oswap -> oswap: receive stable asset from stable AA and forward it to oswap
+			{
+				if: `{ trigger.output[[asset=$stable_asset]] > 0 AND trigger.address == $stable_aa }`,
+				init: `{
+					if (!var['sent_amount'])
+						bounce('no sent amount when received from stable AA');
+				}`,
+				messages: [
+					{
+						app: 'payment',
+						payload: {
+							asset: `{$stable_asset}`,
+							outputs: [
+								{address: "{$stable_oswap_aa}", amount: "{ trigger.output[[asset=$stable_asset]] }"}
+							]
+						}
+					},
+					{
+						app: 'data',
+						payload: {
+							to_aa: `{$reserve_oswap_aa}`, // next oswap in the chain
+							to: `{this_address}`,
+						}
+					}
+				]
+			},
+
+			// oswap -> oswap -> stable -> curve: receive stable asset from oswap and forward it to stable AA
+			{
+				if: `{ trigger.output[[asset=$stable_asset]] > 0 AND trigger.address == $stable_oswap_aa }`,
+				init: `{
+					if (!var['sent_amount'])
+						bounce('no sent amount when received from oswap');
+				}`,
+				messages: [
+					{
+						app: 'payment',
+						payload: {
+							asset: `{$stable_asset}`,
+							outputs: [
+								{address: "{$stable_aa}", amount: "{ trigger.output[[asset=$stable_asset]] }"}
+							]
+						}
+					},
+					{
+						app: 'data',
+						payload: {
+							to: `{$curve_aa}`,
+						}
+					}
+				]
+			},
+
+			// receive proceeds
+			{
+				if: `{ trigger.output[[asset=$reserve_asset]] > 0 AND (trigger.address == $reserve_oswap_aa OR trigger.address == $curve_aa) }`,
+				messages: [
+					{
+						app: 'state',
+						state: `{
+							$sent_amount = var['sent_amount'];
+							if (!$sent_amount)
+								bounce('no sent amount');
+							$profit = trigger.output[[asset=$reserve_asset]] - $sent_amount;
+							response['profit'] = $profit;
+						//	response['profit%'] = 100 * $profit/$sent_amount;
+							$direction = trigger.address == $reserve_oswap_aa ? 'buying' : 'selling';
+							if ($profit < 0)
+								bounce('unprofitable ' || $direction || ': ' || trigger.output[[asset=$reserve_asset]] || ' < ' || $sent_amount || ", fee% " || trigger.data.tx.res.fee_percent || ", tokens2 " || trigger.data.tx.tokens2);
+							var['sent_amount'] = false;
+						}`
+					}
+				]
+			},
+
+			// withdraw
+			{
+				if: `{ trigger.data.withdraw AND trigger.address == params.owner }`,
+				messages: [
+					{
+						app: 'payment',
+						payload: {
+							asset: `{trigger.data.asset OTHERWISE $reserve_asset}`,
+							outputs: [
+								{address: "{params.owner}", amount: "{ trigger.data.amount OTHERWISE '' }"}
+							]
+						}
+					},
+				]
+			},
+
+			// add capital
+			{
+				if: `{ trigger.output[[asset=$reserve_asset]] > 0 }`,
+				messages: [
+					{
+						app: 'state',
+						state: `{
+							response['message'] = 'added ' || trigger.output[[asset=$reserve_asset]];
+						}`
+					}
+				]
+			},
+
+		]
+	}
+}
