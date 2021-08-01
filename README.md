@@ -4,6 +4,7 @@ This Autonomous Agent seeks opportunities to make profit by trading between [Ost
 * GBYTE -> OUSDV2 on Ostable
 * OUSDV2 -> USDC on Oswap
 * USDC -> GBYTE on Oswap
+
 or the same circle in the opposite direction.
 
 The AA trades only if it gets more GBYTE in the final trade than it sent in the first one.
