@@ -13,6 +13,7 @@ const aa_state = require('aabot/aa_state.js');
 const CurveAA = require('./curve.js');
 
 let arb_aas;
+let my_arb_aas;
 let arbsByAAs = {};
 let prev_trigger_initial_unit = {};
 
@@ -21,7 +22,7 @@ let curvesByArb = {};
 
 
 async function estimateAndArbAll() {
-	for (let arb_aa of arb_aas)
+	for (let arb_aa of my_arb_aas)
 		await estimateAndArb(arb_aa);
 }
 
@@ -116,17 +117,21 @@ function getAffectedArbs(aas) {
 async function initArbList() {
 	if (conf.arb_aas && conf.arb_aas.length > 0) {
 		arb_aas = conf.arb_aas;
+		my_arb_aas = conf.arb_aas;
 		return;
 	}
 	if (!conf.owner)
 		throw Error(`neither owner nor arb list`);
 	const rows = await dag.getAAsByBaseAAs(conf.arb_base_aas);
 	arb_aas = [];
+	my_arb_aas = [];
 	for (let { address, definition } of rows) {
+		arb_aas.push(address);
 		if (definition[1].params.owner === conf.owner)
-			arb_aas.push(address);
+			my_arb_aas.push(address);
 	}
-	console.log('arb AAs', arb_aas);
+	console.log('my arb AAs', my_arb_aas);
+	console.log('all arb AAs', arb_aas);
 }
 
 async function addArb(arb_aa) {
@@ -148,11 +153,13 @@ async function addArb(arb_aa) {
 	const { factory } = await dag.readAAParams(stable_oswap_aa);
 	await aa_state.followAA(factory);
 
-	arbsByAAs[curve_aa] = arb_aa;
-	arbsByAAs[stable_oswap_aa] = arb_aa;
-	arbsByAAs[reserve_oswap_aa] = arb_aa;
+	if (my_arb_aas.includes(arb_aa)) {
+		arbsByAAs[curve_aa] = arb_aa;
+		arbsByAAs[stable_oswap_aa] = arb_aa;
+		arbsByAAs[reserve_oswap_aa] = arb_aa;
+		curvesByArb[arb_aa] = curve_aa;
+	}
 
-	curvesByArb[arb_aa] = curve_aa;
 	await CurveAA.create(curve_aa);
 }
 
@@ -166,7 +173,9 @@ async function watchForNewArbs() {
 			console.log(`new arb defined ${address}`);
 			const owner = definition[1].params.owner;
 			if (owner === conf.owner)
-				await addArb(address);
+				my_arb_aas.push(address);
+			arb_aas.push(address);
+			await addArb(address);
 		});
 	}
 }

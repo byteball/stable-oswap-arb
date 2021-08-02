@@ -24,7 +24,7 @@ class CurveAA {
 
 	static async create(curve_aa) {
 		if (curves[curve_aa])
-			throw Error(`curve ${curve_aa} already tracked`);
+			return curves[curve_aa];
 		const params = await dag.readAAParams(curve_aa);
 		const oracles = await dag.executeGetter(curve_aa, 'get_oracles');
 
