@@ -19,7 +19,7 @@ let prev_trigger_initial_unit = {};
 
 let curvesByArb = {};
 
-
+let oswap_aas = {};
 
 async function estimateAndArbAll() {
 	for (let arb_aa of my_arb_aas)
@@ -74,6 +74,18 @@ async function estimateAndArb(arb_aa) {
 	unlock();
 }
 
+async function checkOswapAAsForSufficientBytes() {
+	console.log('checkOswapAAsForSufficientBytes');
+	const upcomingBalances = aa_state.getUpcomingBalances();
+	for (let oswap_aa in oswap_aas) {
+		if (upcomingBalances[oswap_aa].base <= 50000) {
+			console.log(`bytes balance of ${oswap_aa} is only ${upcomingBalances[oswap_aa].base}, will add`);
+			// the request will bounce but leave 10Kb on the AA
+			await dag.sendPayment({ to_address: oswap_aa, amount: 10000, is_aa: true });
+		}
+	}
+	console.log('checkOswapAAsForSufficientBytes done');
+}
 
 async function onAAResponse(objAAResponse) {
 	const { aa_address, trigger_unit, trigger_initial_unit, trigger_address, bounced, response } = objAAResponse;
@@ -143,6 +155,8 @@ async function addArb(arb_aa) {
 	await aa_state.followAA(stable_aa);
 	await aa_state.followAA(stable_oswap_aa);
 	await aa_state.followAA(reserve_oswap_aa);
+	oswap_aas[stable_oswap_aa] = true;
+	oswap_aas[reserve_oswap_aa] = true;
 
 	const { curve_aa } = await dag.readAAParams(stable_aa);
 	const { decision_engine_aa, fund_aa, governance_aa } = await dag.readAAStateVars(curve_aa);
@@ -220,6 +234,8 @@ async function startWatching() {
 	await watchForNewBuffers();
 
 	setTimeout(estimateAndArbAll, 1000);
+	setTimeout(checkOswapAAsForSufficientBytes, 100);
+	setInterval(checkOswapAAsForSufficientBytes, 3600 * 1000);
 }
 
 
