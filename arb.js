@@ -219,7 +219,41 @@ async function watchForNewBuffers() {
 }
 
 
+async function loadLibs() {
+	for (let address of conf.lib_aas) {
+	//	await dag.loadAA(address);
+		const definition = await dag.readAADefinition(address);
+		const payload = { address, definition };
+		await storage.insertAADefinitions(db, [payload], constants.GENESIS_UNIT, 0, false);
+	}
+}
+
+async function watchV2Arbs() {
+	const rows = await dag.getAAsByBaseAAs(conf.v2_arb_base_aas);
+	for (let { address, definition } of rows) {
+		const { stable_aa, stable_oswap_aa, reserve_oswap_aa } = definition[1].params;
+		const { curve_aa } = await dag.readAAParams(stable_aa);
+		if (CurveAA.get(curve_aa)) {
+			await aa_state.followAA(address);
+			await aa_state.followAA(stable_aa);
+			await aa_state.followAA(stable_oswap_aa);
+			await aa_state.followAA(reserve_oswap_aa);
+		}
+	}
+}
+
+async function watchV1V2Arbs() {
+	const rows = await dag.getAAsByBaseAAs(conf.v1v2_arb_base_aas);
+	for (let { address, definition } of rows) {
+		const { oswap_v1_aa, oswap_v2_aa } = definition[1].params;
+		await aa_state.followAA(address);
+		await aa_state.followAA(oswap_v1_aa);
+		await aa_state.followAA(oswap_v2_aa);
+	}
+}
+
 async function startWatching() {
+	await loadLibs();
 	await initArbList();
 	for (let arb_aa of arb_aas)
 		await addArb(arb_aa);
@@ -232,6 +266,9 @@ async function startWatching() {
 	// init the buffers linked to the watched curves
 	await watchBuffers();
 	await watchForNewBuffers();
+
+	await watchV2Arbs();
+	await watchV1V2Arbs();
 
 	setTimeout(estimateAndArbAll, 1000);
 	setTimeout(checkOswapAAsForSufficientBytes, 100);
