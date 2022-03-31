@@ -6,6 +6,7 @@ const conf = require('ocore/conf.js');
 const mutex = require('ocore/mutex.js');
 const network = require('ocore/network.js');
 const aa_composer = require("ocore/aa_composer.js");
+const storage = require("ocore/storage.js");
 
 const dag = require('aabot/dag.js');
 const operator = require('aabot/operator.js');
