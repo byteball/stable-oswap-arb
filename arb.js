@@ -7,6 +7,9 @@ const mutex = require('ocore/mutex.js');
 const network = require('ocore/network.js');
 const aa_composer = require("ocore/aa_composer.js");
 const storage = require("ocore/storage.js");
+const db = require("ocore/db.js");
+const constants = require("ocore/constants.js");
+const light_wallet = require("ocore/light_wallet.js");
 
 const dag = require('aabot/dag.js');
 const operator = require('aabot/operator.js');
@@ -270,6 +273,8 @@ async function startWatching() {
 
 	await watchV2Arbs();
 	await watchV1V2Arbs();
+
+	await light_wallet.waitUntilFirstHistoryReceived();
 
 	setTimeout(estimateAndArbAll, 1000);
 	setTimeout(checkOswapAAsForSufficientBytes, 100);
