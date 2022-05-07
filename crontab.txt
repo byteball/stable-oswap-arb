@@ -1,0 +1,1 @@
+*/20 * * * * cd stable-oswap-arb; node check_daemon.js 1>>~/.config/stable-oswap-arb/check_daemon.log 2>>~/.config/stable-oswap-arb/check_daemon.err

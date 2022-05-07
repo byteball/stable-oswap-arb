@@ -1,7 +1,6 @@
 {
   "name": "stable-oswap-arb",
   "version": "0.1.0",
-  "private": true,
   "scripts": {
     "test": "mocha --opts test/mocha.opts --require test/bootload.js",
     "test:all": "mocha --opts test/mocha.opts --require test/bootload.js test/*.test.oscript.js",
@@ -30,7 +29,6 @@
   },
   "resolutions": {
     "chalk": "^3.0.0",
-    "cli-width": "^2.2.1",
-		"level-rocksdb": "^4.0.0"
+    "cli-width": "^2.2.1"
   }
 }
