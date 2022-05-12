@@ -15,6 +15,7 @@ const dag = require('aabot/dag.js');
 const operator = require('aabot/operator.js');
 const aa_state = require('aabot/aa_state.js');
 const CurveAA = require('./curve.js');
+const xmutex = require("./xmutex");
 
 let arb_aas;
 let my_arb_aas;
@@ -27,7 +28,13 @@ let oswap_aas = {};
 
 async function estimateAndArbAll() {
 	for (let arb_aa of my_arb_aas)
-		await estimateAndArb(arb_aa);
+		await estimateAndArbUnderArbLock(arb_aa);
+}
+
+async function estimateAndArbUnderArbLock(arb_aa) {
+	await xmutex.lock();
+	await estimateAndArb(arb_aa);
+	await xmutex.unlock();
 }
 
 async function estimateAndArb(arb_aa) {
@@ -102,7 +109,7 @@ async function onAAResponse(objAAResponse) {
 	const unlock = await mutex.lock('resp');
 	for (let arb of arbs) {
 		if (trigger_initial_unit !== prev_trigger_initial_unit[arb])
-			await estimateAndArb(arb);
+			await estimateAndArbUnderArbLock(arb);
 		prev_trigger_initial_unit[arb] = trigger_initial_unit;
 	}
 	unlock();
@@ -117,7 +124,7 @@ async function onAARequest(objAARequest, arrResponses) {
 	const arbs = getAffectedArbs(aas);
 	console.log(`affected arbs`, arbs);
 	for (let arb of arbs)
-		await estimateAndArb(arb);
+		await estimateAndArbUnderArbLock(arb);
 }
 
 function getAffectedArbs(aas) {

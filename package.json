@@ -15,6 +15,7 @@
     "aa-testkit": "git+https://github.com/valyakin/aa-testkit.git",
     "aabot": "git+https://github.com/byteball/aabot.git",
     "bonded-stablecoin": "git+https://github.com/byteball/bonded-stablecoin.git",
+		"fs-ext": "^2.0.0",
     "oswap": "git+https://github.com/bonustrack/oswap.io.git"
 },
   "devDependencies": {
