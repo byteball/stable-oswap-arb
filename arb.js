@@ -5,6 +5,7 @@ const eventBus = require('ocore/event_bus.js');
 const conf = require('ocore/conf.js');
 const mutex = require('ocore/mutex.js');
 const network = require('ocore/network.js');
+const device = require('ocore/device.js');
 const aa_composer = require("ocore/aa_composer.js");
 const storage = require("ocore/storage.js");
 const db = require("ocore/db.js");
@@ -25,6 +26,10 @@ let prev_trigger_initial_unit = {};
 let curvesByArb = {};
 
 let oswap_aas = {};
+
+function wait(ms) {
+	return new Promise(resolve => setTimeout(resolve, ms));
+}
 
 async function waitForAAStateQueueToEmpty() {
 	while (mutex.isQueued('aa_state')) {
@@ -148,6 +153,20 @@ function getAffectedArbs(aas) {
 			arbs.push(arb);
 	}
 	return arbs;
+}
+
+async function waitForStability() {
+	const last_mci = await device.requestFromHub('get_last_mci', null);
+	console.log(`last mci ${last_mci}`);
+	while (true) {
+		await wait(60 * 1000);
+		const props = await device.requestFromHub('get_last_stable_unit_props', null);
+		const { main_chain_index } = props;
+		console.log(`last stable mci ${main_chain_index}`);
+		if (main_chain_index >= last_mci)
+			break;
+	}
+	console.log(`mci ${last_mci} is now stable`);
 }
 
 async function initArbList() {
@@ -283,10 +302,6 @@ async function startWatching() {
 		await addArb(arb_aa);
 	await watchForNewArbs();
 
-	eventBus.on("aa_request_applied", onAARequest);
-	eventBus.on("aa_response_applied", onAAResponse);
-	eventBus.on('data_feeds_updated', estimateAndArbAll);
-
 	// init the buffers linked to the watched curves
 	await watchBuffers();
 	await watchForNewBuffers();
@@ -295,6 +310,12 @@ async function startWatching() {
 	await watchV1V2Arbs();
 
 	await light_wallet.waitUntilFirstHistoryReceived();
+
+	await waitForStability();
+
+	eventBus.on("aa_request_applied", onAARequest);
+	eventBus.on("aa_response_applied", onAAResponse);
+	eventBus.on('data_feeds_updated', estimateAndArbAll);
 
 	setTimeout(estimateAndArbAll, 1000);
 	setTimeout(checkOswapAAsForSufficientBytes, 100);
