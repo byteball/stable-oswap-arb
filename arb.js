@@ -88,7 +88,15 @@ async function estimateAndArb(arb_aa) {
 	for (let asset in balances)
 		if (balances[asset] < 0)
 			return unlock(`${arb_aa}/${curve_aa}: ${asset} balance would become negative: ${balances[asset]}`);
-	console.log(`estimateAndArb: ${arb_aa}/${curve_aa} would succeed`);
+	const arbResponses = arrResponses.filter(r => r.aa_address === arb_aa);
+	const lastResponse = arbResponses[arbResponses.length - 1];
+	const profit = lastResponse.response.responseVars.profit;
+	if (!profit)
+		throw Error(`no profit in response vars from ${arb_aa}`);
+	const usd_profit = profit / 1e9 * network.exchangeRates.GBYTE_USD;
+	console.log(`estimateAndArb: ${arb_aa}/${curve_aa} would succeed with profit ${profit} or $${usd_profit}`);
+	if (usd_profit < conf.min_profit)
+		return unlock(`profit would be too small`);
 	const unit = await dag.sendAARequest(arb_aa, { arb: 1 });
 	if (!unit)
 		return unlock(`sending arb request failed`);

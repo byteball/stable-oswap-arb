@@ -34,6 +34,8 @@ exports.explicitStart = true;
 exports.min_reserve_delta = 1e8;
 exports.min_distance_delta = 1e-3;
 
+exports.min_profit = 0.1; // in USD
+
 exports.arb_base_aas = ['IO63YJGOTTFS6NUENQQ3NB5MW56HHI3A'];
 exports.owner = ''; // set in conf.json
 exports.arb_aas = []; // set in conf.json
