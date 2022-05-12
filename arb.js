@@ -26,7 +26,15 @@ let curvesByArb = {};
 
 let oswap_aas = {};
 
+async function waitForAAStateQueueToEmpty() {
+	while (mutex.isQueued('aa_state')) {
+		const aa_state_unlock = await aa_state.lock(); // make sure we are the last to lock aa_state
+		aa_state_unlock();			
+	}
+}
+
 async function estimateAndArbAll() {
+	await waitForAAStateQueueToEmpty();
 	for (let arb_aa of my_arb_aas)
 		await estimateAndArbUnderArbLock(arb_aa);
 }
@@ -38,6 +46,7 @@ async function estimateAndArbUnderArbLock(arb_aa) {
 }
 
 async function estimateAndArb(arb_aa) {
+	await waitForAAStateQueueToEmpty();
 	const unlock = await mutex.lock('estimate');
 	const curve_aa = curvesByArb[arb_aa];
 	console.log('===== estimateAndArb arb ' + arb_aa + ' on curve ' + curve_aa);
@@ -106,6 +115,7 @@ async function onAAResponse(objAAResponse) {
 	console.log(`arbs affected by response from ${aa_address} initial trigger ${trigger_initial_unit} trigger ${trigger_unit}`, arbs);
 	if (arbs.length === 0)
 		return;
+	await waitForAAStateQueueToEmpty();
 	const unlock = await mutex.lock('resp');
 	for (let arb of arbs) {
 		if (trigger_initial_unit !== prev_trigger_initial_unit[arb])
@@ -123,6 +133,9 @@ async function onAARequest(objAARequest, arrResponses) {
 	console.log(`request from ${address} trigger ${objAARequest.unit.unit} affected AAs`, aas);
 	const arbs = getAffectedArbs(aas);
 	console.log(`affected arbs`, arbs);
+	if (arbs.length === 0)
+		return;
+	await waitForAAStateQueueToEmpty();
 	for (let arb of arbs)
 		await estimateAndArbUnderArbLock(arb);
 }
